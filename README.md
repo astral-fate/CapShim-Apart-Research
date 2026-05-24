@@ -1,5 +1,8 @@
 # CapShim
 
+<img width="2752" height="1536" alt="Gemini_Generated_Image_a9ibu8a9ibu8a9ib" src="https://github.com/user-attachments/assets/5c22eba3-c8cc-49b7-9173-6ac1c19a76a0" />
+
+
 **Capability-typed shim for the Model Context Protocol.**
 
 CapShim is a transparent proxy between an LLM agent and an MCP server.
