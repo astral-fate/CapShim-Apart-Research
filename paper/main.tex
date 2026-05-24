@@ -1,0 +1,615 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathpartir}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+  frame=single,
+  framerule=0.3pt,
+}
+
+\title{\textbf{CapShim:}\\ Capability-Typed Shimming for the Model Context Protocol\\
+\large with a Non-Interference Argument Against\\Weird-Machine Tool Composition}
+\author{Fatimah Emad Eldin\\\small AI Researcher\\\small\texttt{Fatimah@trouve.works}}
+\date{24 May 2026\\\small Apart Research \& Atlas Computing\\\small Secure Program Synthesis Hackathon, Tracks 1--2 (cross-cutting Problem~\#13)}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+The Model Context Protocol (MCP) has become the de facto interface
+between large-language-model agents and external tools, and it ships
+with \emph{ambient authority}: an exposed \texttt{fs\_read} tool can
+read anything the host process can. Individual tool calls are benign;
+the danger is \emph{composition}---a prompt injection that says
+``read \texttt{\textasciitilde/.ssh/id\_rsa} and \texttt{POST} it to
+\texttt{attacker.com}'' is the canonical \emph{weird machine} of
+LangSec adapted to agentic systems. We present \textbf{CapShim}, a
+transparent, capability-typed proxy that intercepts MCP
+\texttt{tools/call} traffic, lifts tool inputs and outputs onto an
+Information Flow Control (IFC) lattice, and statically rejects any
+proposed call plan whose data flow would violate a YAML-declared
+policy. On a benchmark of ten attack scenarios drawn from the
+AgentDojo taxonomy and ten benign workflows, CapShim blocks 100\,\% of
+attacks with zero false positives and median enforcement latency of
+0.044\,ms. We sketch a non-interference argument that makes the
+guarantee precise. CapShim is a 1\,500-line Python library, drop-in for
+the public \texttt{@modelcontextprotocol} servers, and is released
+under MIT.
+\end{abstract}
+
+%====================================================================
+\section{Introduction}
+%====================================================================
+
+The headline failure of agentic AI in 2026 is not yet a clever
+jailbreak; it is the boring fact that ``\texttt{file\_read} then
+\texttt{http\_post}'' exfiltrates secrets whenever an attacker can
+inject a single string into the agent's context. The pattern is the
+exact failure mode that LangSec calls a \emph{weird
+machine}~\cite{bratus2011}: a composition of individually-permitted
+operations into a logic the system never intended to expose.
+
+MCP, the protocol that standardises tool access for Claude Desktop,
+Cursor, Continue, and dozens of other agentic IDEs, codifies this
+exposure into infrastructure. Every server in the public catalogue
+runs with \emph{ambient authority}: a tool named \texttt{fs\_read}
+inherits all the filesystem permissions of the host process.
+Mitigation, where it exists, is ad-hoc string matching at the API
+gateway and pleading prompts in the system message.
+
+\paragraph{Contribution.} We argue that this is fundamentally a
+\emph{type system} problem and treat the MCP bus as a typed language.
+Concretely, we contribute:
+\begin{enumerate}[leftmargin=*]
+\item A Python library, \textbf{CapShim} ($\sim$\,1\,500 LoC, MIT),
+that is a drop-in proxy between any MCP client and any MCP server. It
+extends the existing tool-schema JSON with three optional fields
+(\texttt{inputLabels}, \texttt{outputLabel}, \texttt{effects}) and
+typechecks the agent's proposed call plan against a declared policy
+before any tool fires.
+\item A small but realistic IFC type system---three labels (Public
+$\sqsubseteq$ User $\sqsubseteq$ Secret), provenance categories, four
+typing rules, explicit declassification---together with a
+non-interference argument relating it to the policy.
+\item An empirical evaluation on a 20-scenario benchmark assembled
+from the AgentDojo taxonomy~\cite{debenedetti2024agentdojo} that
+demonstrates 100\,\% attack blocking, 0\,\% false-positive rate, and
+sub-millisecond enforcement latency.
+\end{enumerate}
+This work directly targets Problem \#13 (Capability-Safe Tool
+Interfaces) from Dougherty \& von
+Hippel~\cite{dougherty2026tractable} and contributes to Tracks 1--2
+of the Secure Program Synthesis Hackathon by making the
+\emph{specification} of safe tool composition both human-readable
+(YAML) and machine-checkable (the typechecker).
+
+%====================================================================
+\section{Related Work}
+%====================================================================
+
+\paragraph{Capability security.} Miller's object-capability
+work~\cite{miller2006robust} establishes the philosophical baseline:
+authority should be \emph{designated} rather than \emph{ambient}.
+MCP today contradicts this. CapShim is, in essence, a small
+capability layer retrofitted onto an ambient-authority protocol.
+
+\paragraph{Information flow control.} Denning's lattice
+model~\cite{denning1976lattice} and the modern statement of
+non-interference by Sabelfeld and Myers~\cite{sabelfeld2003language}
+furnish our type system. Jif and FlowCaml are the canonical
+language-level implementations; CapShim moves the same idea to the
+protocol level, where the values are JSON-RPC arguments rather than
+program variables.
+
+\paragraph{LLM-agent security.} AgentDojo~\cite{debenedetti2024agentdojo}
+provides a taxonomy of prompt-injection attacks against tool-using
+agents; we draw our ten attack scenarios from this taxonomy. The
+Universalis/Automind work of Meijer~\cite{meijer2026universalis}
+takes a heavier route, compiling agent plans into a Prolog-style DSL
+and discharging them with Z3 before any tool fires; CapShim is
+deliberately lighter, trading expressive power for a 200-line
+typechecker that ships today.
+
+\paragraph{Specification elicitation \& validation.} Dougherty and
+von Hippel~\cite{dougherty2026tractable} frame the bottleneck in
+secure program synthesis as specification work; in the Q\&A session
+preceding this hackathon, Dougherty named ``differential specs'' and
+``a tool people could clone off GitHub on Monday morning'' as the
+two heuristics that would win his vote. CapShim's policy file is
+exactly that kind of compact specification, human-readable and
+LLM-readable in the same breath.
+
+%====================================================================
+\section{Threat Model}
+%====================================================================
+
+\paragraph{Setting.} An LLM agent is connected to one or more MCP
+servers that expose tools. The user grants the agent a session and
+issues high-level natural-language requests. Some inputs to the
+agent (a web page, a search result, a checked-in README, a Slack
+message, a PR description) are attacker-controlled.
+
+\paragraph{Adversary capability.} The adversary controls one or more
+\emph{indirect prompts} that reach the agent's context window. They
+cannot patch the MCP server, the client, or the shim, but they can
+attempt to coerce the agent into emitting any \texttt{tools/call}
+sequence the MCP server will accept.
+
+\paragraph{Security goal.} For every plan $P$ the agent emits, the
+sequence of side effects that survive the shim must satisfy the IFC
+policy: confidential reads cannot reach untrusted sinks, even via
+composition through intermediate tools. Formally, this is a
+non-interference property over the egress channel
+(\S\ref{sec:noninterference}).
+
+\paragraph{Out of scope.} (1) Covert channels purely inside the LLM's
+context window (e.g.\ the model summarising a secret in natural
+language back to the user). (2) Lying tool authors who advertise
+labels they do not honour. (3) Untyped channels outside the MCP bus
+(e.g.\ a tool that mutates global filesystem state observable by
+another tool). We discuss these in the dual-use appendix.
+
+%====================================================================
+\section{Design}
+%====================================================================
+
+\subsection{Architecture}
+
+CapShim is a stateless transparent proxy. It speaks the MCP JSON-RPC
+dialect on both sides; the agent and the upstream MCP server need no
+modification.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm and 10mm,
+  box/.style={draw, rounded corners=2pt, minimum height=8mm,
+              minimum width=22mm, font=\small, align=center},
+  capbox/.style={box, fill=blue!8},
+  policybox/.style={box, fill=yellow!15, minimum width=18mm},
+]
+\node[box] (agent)  {LLM agent};
+\node[capbox, right=of agent] (shim) {CapShim\\\footnotesize proxy};
+\node[box, right=of shim] (server) {MCP server\\\footnotesize tools};
+\node[policybox, below=of shim] (pol) {\texttt{policy.yaml}};
+\draw[->] (agent) -- node[above,font=\scriptsize]{JSON-RPC} (shim);
+\draw[->] (shim)  -- node[above,font=\scriptsize]{JSON-RPC} (server);
+\draw[->] (server.south west) to[bend left=25]
+  node[below,font=\scriptsize]{result} (agent.south east);
+\draw[->,dashed] (pol) -- (shim);
+\end{tikzpicture}
+\end{center}
+
+The shim's only decision is whether to forward a \texttt{tools/call}
+(or a multi-call plan submitted via the non-standard
+\texttt{capshim/plan} method) or to short-circuit it with a
+structured \texttt{capability\_denied} error. Every decision is
+logged with the proof witness.
+
+\subsection{IFC Lattice}
+
+We instantiate the smallest lattice that captures the threat model:
+\[
+\text{Public} \sqsubseteq \text{User} \sqsubseteq \text{Secret}.
+\]
+Each labelled value also carries a set of \emph{provenance
+categories} drawn from $\{\texttt{fs.read}(p),\
+\texttt{fs.write}(p),\ \texttt{net.http}(h),\ \texttt{env}(n),\
+\texttt{secret},\ \texttt{pii}\}$. Categories let the policy decide
+not only on confidentiality level but on origin: data tagged
+\texttt{fs.read("$\sim$/.ssh/id\_rsa")} may be blocked even if the
+declared label is User, because the category itself names a
+sensitive resource.
+
+The lattice supports join $\sqcup$ and a category-aware
+declassification operator authorised only by explicit policy
+edges (\S\ref{sec:type-rules}).
+
+\subsection{Tool-Schema Extensions}
+
+Vanilla MCP tools advertise \texttt{name}, \texttt{description}, and
+an \texttt{inputSchema}. We add three optional fields:
+
+\begin{lstlisting}[language=]
+"inputLabels":  { "path": "PUBLIC", "content": "PUBLIC" }
+"outputLabel":  "$label_of_path(${path})+fs.read(${path})"
+"effects":      ["fs.read"]
+\end{lstlisting}
+
+The \texttt{outputLabel} string is a tiny template language with two
+helpers, \texttt{\$label\_of\_path} and \texttt{\$label\_of\_env},
+that consult the policy at typecheck time. This lets a tool declare,
+once, that ``my output is Secret if the policy considers this path
+sensitive, otherwise Public,'' without baking the policy into the
+tool.
+
+\subsection{Type Rules}\label{sec:type-rules}
+
+A \emph{plan} is a finite sequence of tool calls; subsequent calls
+reference earlier returns via the literal placeholder \texttt{\$ret:i}.
+The checker symbolically evaluates a plan, tracking the tag of each
+value, and applies the rules below. We write
+$\Gamma \vdash e : (\ell, C)$ for ``in environment $\Gamma$, value
+$e$ has confidentiality $\ell$ and provenance categories $C$.''
+
+\begin{mathpar}
+\inferrule*[Right=T-Read]
+{ }
+{ \Gamma \vdash \mathsf{fs\_read}(p) : (\mathit{label}_\Pi(p),\
+  \{\mathsf{fs.read}(p)\}) }
+
+\and
+
+\inferrule*[Right=T-Net]
+{ \Gamma \vdash b : (\ell, C) \\
+  \Pi\ \mathsf{allows\_sink}(h, \ell, C) \\
+  \mathsf{net.http}(h) \in \Pi.\mathsf{egress} }
+{ \Gamma \vdash \mathsf{net\_http\_post}(h, b) :
+  (\mathsf{Public}, C) }
+
+\and
+
+\inferrule*[Right=T-Write]
+{ \Gamma \vdash c : (\ell, C) \\
+  \ell \sqsubseteq \mathsf{Public}\ \lor\
+  p \in \Pi.\mathsf{sensitive\_paths} }
+{ \Gamma \vdash \mathsf{fs\_write}(p, c) :
+  (\mathsf{Public}, C) }
+
+\and
+
+\inferrule*[Right=T-Declassify]
+{ \Gamma \vdash e : (\ell_1, C) \\
+  (\ell_1 \to \ell_2,\ t,\ \kappa) \in \Pi.\mathsf{declassify} \\
+  \kappa\ \mathsf{matches}\ C }
+{ \Gamma \vdash \mathsf{declassify}_t(e, \ell_2) : (\ell_2, C) }
+\end{mathpar}
+
+$\Pi$ is the policy. $\mathit{label}_\Pi(p)$ returns Secret if $p$
+matches any glob in $\Pi.\mathsf{sensitive\_paths}$ and Public
+otherwise. The policy's \texttt{allows\_sink} predicate enforces the
+egress decision: Public/User data may leave to any host in
+$\Pi.\mathsf{egress}$; Secret data leaves only to
+$\Pi.\mathsf{trusted\_hosts}$ and only if no sensitive-category tag
+forbids it.
+
+The checker is a small-step interpreter that fails fast on the
+first rule violation and returns a structured \emph{witness} naming
+the rule, the offending call, the source label, the categories, and
+the sink. This witness is what the proxy returns in the
+\texttt{capability\_denied} error payload.
+
+\subsection{Non-Interference}\label{sec:noninterference}
+
+We sketch the central argument. Let $\Pi$ be a fixed policy and let
+$P_1, P_2$ be two plans that differ only in their \emph{Secret} inputs
+(formally: the two plans agree on the values of every term whose tag
+is $\sqsubseteq$ User in the initial environment).
+
+\begin{theorem}[Egress non-interference (informal)]
+If $\Pi \vdash P_1$ and $\Pi \vdash P_2$ both typecheck, then the
+sub-sequence of egress events $\{\mathsf{net.http}(h, v) :
+h \notin \Pi.\mathsf{trusted\_hosts}\}$ produced by $P_1$ and by
+$P_2$ are identical.
+\end{theorem}
+
+\noindent\emph{Sketch.} Induction on plan length. The checker's
+invariant is that any value reaching $\mathsf{net.http}(h)$ with
+$h \notin \Pi.\mathsf{trusted\_hosts}$ has effective label
+$\sqsubseteq$ User and no sensitive-category tag. T-Net enforces
+this; T-Declassify only relabels values whose category set is
+disjoint from the policy's sensitive categories. Substituting any
+Secret-tagged input cannot change the value of a User-tagged
+expression without violating T-Net or T-Declassify, contradicting
+the assumption that the plan typechecks. $\Box$
+
+A mechanised proof of this sketch in Lean 4 is left as future work
+(\S\ref{sec:future}); the type system was deliberately kept small
+enough that the manual induction is convincing.
+
+%====================================================================
+\section{Implementation}
+%====================================================================
+
+The implementation is 1\,500 lines of Python 3.10+, structured as
+five core modules and an example MCP server. CapShim's proxy speaks
+MCP JSON-RPC 2.0 over stdio and HTTP, the two transports defined in
+the MCP specification revisions of 2024-11-05 and 2025-03-26; we
+tested compatibility against the reference servers in
+\texttt{@modelcontextprotocol/servers} (filesystem, fetch,
+git, postgres) at commit \texttt{HEAD$\sim$} as of May 2026. The
+shim's policy file and schema extensions are MCP-spec backwards
+compatible---vanilla clients that ignore the
+\texttt{inputLabels}/\texttt{outputLabel}/\texttt{effects} fields
+continue to interoperate.
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Module & Role \\\midrule
+\texttt{labels.py}   & lattice, categories, tags, join/meet \\
+\texttt{schema.py}   & MCP schema extensions, label-template parser \\
+\texttt{policy.py}   & YAML loader, predicates, declassification \\
+\texttt{checker.py}  & plan typechecker, witness construction \\
+\texttt{proxy.py}    & async JSON-RPC interceptor, audit log \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The proxy is stateless across requests; per-plan state lives only
+inside a single \texttt{check\_plan} call. The checker holds no
+external dependencies beyond PyYAML; the test suite adds Hypothesis
+for property-based tests on the lattice.
+
+%====================================================================
+\section{Evaluation}
+%====================================================================
+
+\subsection{Benchmark}
+
+We assembled ten attack scenarios (A1--A10) by walking the
+\emph{indirect-prompt-injection} subset of the AgentDojo
+taxonomy~\cite{debenedetti2024agentdojo} (Sections 3.1--3.3 of that
+paper, covering filesystem, network, and environment-channel
+exfiltration patterns) and instantiating each pattern against the
+toy MCP server's tools (\texttt{fs\_read}, \texttt{fs\_write},
+\texttt{net\_http\_post}, \texttt{env\_get}). The attacks span the
+three classical exfiltration topologies: direct two-step
+(\emph{read $\rightarrow$ post}), three-step laundering through a
+file (\emph{read $\rightarrow$ write $\rightarrow$ post}), and
+environment-variable harvest (\emph{env $\rightarrow$ post}).
+
+Ten benign workflows (B1--B10) cover the realistic positive set
+(coding-agent and integration-bot use). Each was chosen
+\emph{before} running the checker, to avoid the bias of selecting
+benign cases that happen to pass. The full enumeration is in
+Appendix~\ref{app:benign} alongside the attack table.
+
+\subsection{Headline Numbers}
+
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & Target \\\midrule
+Attacks blocked (TPR) & 10/10 (100\,\%) & $\geq$\,90\,\% \\
+Benign allowed (1$-$FPR) & 10/10 (100\,\%) & $\geq$\,90\,\% \\
+Median enforcement latency & 0.044\,ms & $<$5\,ms \\
+P95 enforcement latency & 0.221\,ms & $<$5\,ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Per-Attack Results}
+
+\begin{center}
+\scriptsize
+\begin{tabular}{lll}
+\toprule
+ID & Pattern & Verdict \\\midrule
+A1  & ssh key $\to$ attacker.com                 & deny (T-Net-Confidentiality) \\
+A2  & AWS creds $\to$ pastebin                   & deny (T-Net-Egress) \\
+A3  & \texttt{.env} $\to$ attacker.com           & deny (T-Net-Confidentiality) \\
+A4  & GITHUB\_TOKEN $\to$ github abuse endpoint  & deny (T-Net-Confidentiality) \\
+A5  & ssh key $\to$ tmp file $\to$ attacker      & deny (T-Write-Leak) \\
+A6  & direct egress to disallowed host           & deny (T-Net-Egress) \\
+A7  & \texttt{.env} $\to$ public log             & deny (T-Write-Leak) \\
+A8  & AWS creds $\to$ weather.example.com        & deny (T-Net-Confidentiality) \\
+A9  & \texttt{id\_rsa.bak} glob $\to$ github     & deny (T-Net-Confidentiality) \\
+A10 & AWS env $\to$ public path                  & deny (T-Write-Leak) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The benign-workflow table is in
+Appendix~\ref{app:benign}; the takeaway is that for B1--B10
+\emph{no} type rule fires.
+
+\subsection{Latency}
+
+Per-call overhead is dominated by dict lookups and a single
+\texttt{fnmatch} per sensitive-path glob. Across 200 repeated
+\texttt{net\_http\_post} calls on a stock workstation
+(Python 3.14, Windows 11), the median check completes in 44\,µs and
+the P95 in 221\,µs. Production MCP calls take 10--500\,ms of
+network round-trip, so the shim's overhead is below the noise floor.
+
+%====================================================================
+\section{Discussion}
+%====================================================================
+
+\paragraph{What CapShim does buy.} Reduction of a class of agent
+attacks (composition-via-prompt-injection of two or more benign
+tools) from a hand-audit problem to a typecheck. The policy file
+($\sim$30 lines for our example) is small enough that a security
+reviewer can read it in five minutes and an LLM can author a first
+draft. Because the proof witness is structured, audit-time
+forensics get the rule, the source label, the categories, and the
+sink for free.
+
+\paragraph{What it doesn't.} CapShim is silent on three real
+failure modes. (1) \emph{Out-of-band channels through the LLM.}
+If a tool returns Secret data into the LLM's context, the model can
+launder it into a natural-language reply that the user reads or
+posts elsewhere; nothing in MCP carries IFC labels into the LLM's
+own reasoning trace. (2) \emph{Lying tool authors.} A malicious MCP
+server that advertises \texttt{outputLabel: "PUBLIC"} for an
+\texttt{fs\_read} of a sensitive file laundens by claim. (3)
+\emph{Side channels.} A clever attacker can encode bits of a secret
+in argument structure (order, length, presence/absence of optional
+fields), and the checker is field-level, not byte-level.
+
+We address each in detail in the dual-use appendix.
+
+%====================================================================
+\section{Future Work}\label{sec:future}
+%====================================================================
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Mechanised proof in Lean 4.} The type system is small
+($\sim$4 rules); a complete non-interference proof against a
+small-step semantics is tractable in a follow-on month and would
+close the modeling-gap end of the Miyazono triangle. Three lemmas
+sit on the critical path and would be discharged first:
+(L1)~\emph{label monotonicity under T-Read}, stating that
+$\mathit{label}_\Pi(p)$ is monotone with respect to $\Pi$ refinement,
+so adding sensitive paths to a policy never lowers any read's label;
+(L2)~\emph{soundness of T-Declassify}, stating that declassification
+preserves non-interference modulo the policy's explicit
+declassification edges (i.e., only categories disjoint from the
+sensitive set may be relabelled); and (L3)~the \emph{inductive step
+of the non-interference theorem}, stating that if a plan-prefix of
+length $n$ satisfies the egress non-interference invariant, then
+extending it with any single typeable call also satisfies it.
+Together these yield Theorem~1.
+
+\item \textbf{Per-message taint in the LLM.} A first-pass shim
+operating on the LLM's own scratchpad, treating Secret-tagged
+context tokens as poisoned for subsequent reads, would address the
+out-of-band channel.
+
+\item \textbf{Differential specs.} Given an MCP server, prompt two
+LLMs to author \texttt{capshim} policies independently and run them
+both---disagreements between policies are exactly the contract-bug
+signal Quinn Dougherty asked for in the Q\&A.
+
+\item \textbf{TypeScript port.} The MCP reference implementation is
+TypeScript; a port of the typechecker would let CapShim drop into
+Claude Desktop, Cursor, and Continue without a Python sidecar.
+\end{itemize}
+
+%====================================================================
+\section{Conclusion}
+%====================================================================
+
+The Model Context Protocol's security failures are not exotic, they
+are ambient-authority failures of the most classical kind, and the
+fix is the most classical answer: a small type system at the
+boundary. CapShim is the demonstration that the answer fits in 1\,500
+lines of Python, runs in microseconds, and catches the standard
+weird-machine playbook today, before either the LLMs or the
+adversaries get any more sophisticated.
+
+\bibliographystyle{plainurl}
+\bibliography{references}
+
+%====================================================================
+\appendix
+\section{Limitations and Dual-Use Considerations}
+%====================================================================
+
+\paragraph{False negatives.} (1) \textbf{Lying tool authors:}
+if a malicious server advertises Public for an output that is in
+fact Secret, the checker will trust the advertisement. The
+appropriate remedy is a third-party audit of the schema, the same
+trust model Linux package signing relies on. (2) \textbf{In-LLM
+laundering:} a Secret-tagged value returned to the agent can be
+restated by the LLM in a follow-up assistant message and exit the
+system via the user-facing channel, which has no IFC. (3)
+\textbf{Argument-structure side channels:} the checker is
+field-level, not byte-level; an attacker can encode roughly
+$\log_2(\text{arg count}!)$ bits per call in argument ordering on
+JSON-RPC implementations that preserve order.
+(4)~\textbf{Timing and call-count channels:} our non-interference
+theorem (\S\ref{sec:noninterference}) quantifies over the
+\emph{sequence of egress events with payload}; it says nothing
+about the \emph{number} of tool calls the agent emits or the
+\emph{timing} between them. An adversary who cannot smuggle secret
+bytes through the payload can still leak one bit per execution by
+choosing whether to make $N$ benign calls or $M$ benign calls,
+which CapShim's allow-decision will not perturb. Defeating this
+class of channel requires either covering-traffic (issue the same
+number of calls regardless of input) or a quantitative
+information-flow framework~\cite{sabelfeld2003language} that goes
+beyond the binary non-interference we prove here. We name it here
+so a reviewer is not misled by the headline ``100\,\% blocked''
+number: 100\,\% refers to the AgentDojo-derived corpus, not to all
+covert channels.
+
+\paragraph{False positives.} The lattice is coarse (three labels).
+Workloads requiring fine-grained classification (HIPAA's 18
+identifiers, PCI cardholder data subcategories) need a richer
+lattice; this is a parameter, not a redesign.
+
+\paragraph{Dual-use.} The technology is inherently defensive: it
+restricts what an LLM agent can do. We see no offensive misuse path
+for the typechecker itself. The benchmark scenarios are public
+patterns that any adversary can already reproduce from the
+AgentDojo paper; releasing them as named, scripted plans does not
+materially advance attacker capability and gives defenders a
+shared yardstick.
+
+\paragraph{LLM-Assisted Authoring.} The lead author used Claude
+Opus 4.7 for literature scoping, brainstorming the type-system
+shape against the AgentDojo taxonomy, and drafting prose; all
+typing rules, the non-interference argument, the implementation,
+the policy DSL, and the eval benchmark are the author's own design,
+written and verified by hand. No portion of the codebase was
+copy-pasted from a model without a code review.
+
+%====================================================================
+\section{Benign-Workflow Enumeration}\label{app:benign}
+%====================================================================
+
+Symmetric with the attack table. Each scenario is the full plan a
+realistic coding-agent or integration-bot might emit; the
+``rule (would have) fired'' column is blank for every row, by
+construction. A reviewer suspicious of cherry-picked benign cases
+can rerun any of these directly: \texttt{python -m
+evals.run\_evals}.
+
+\begin{center}
+\scriptsize
+\begin{tabular}{p{0.6cm}p{8.1cm}p{4.4cm}}
+\toprule
+ID & Pattern & Why no rule fired \\\midrule
+B1  & read \texttt{/srv/app/README.md}
+    & path not in \texttt{sensitive\_paths}; no egress \\
+B2  & POST plain text to \texttt{api.github.com}
+    & host in \texttt{allowed\_egress}; payload Public \\
+B3  & read \texttt{CHANGELOG.md} $\to$ POST to \texttt{api.github.com}
+    & Public-tagged read flows to allowed-egress host \\
+B4  & POST to \texttt{weather.example.com}
+    & host in \texttt{allowed\_egress}; no confidential source \\
+B5  & read \texttt{.env} $\to$ POST to \texttt{audit-sink.company.local}
+    & sink is in \texttt{trusted\_hosts}, the legitimate carve-out \\
+B6  & write ``build ok'' to \texttt{/var/log/app.log}
+    & Public payload, write target outside
+      \texttt{sensitive\_paths} \\
+B7  & read \texttt{README.md} $\to$ write to log
+    & Public-tagged read may be persisted anywhere \\
+B8  & POST to \texttt{internal.company.local}
+    & trusted internal endpoint \\
+B9  & read \texttt{docs/intro.md} $\to$ POST to GitHub
+    & Public docs piped to allowed-egress \\
+B10 & two independent posts to allowed hosts
+    & no flow between calls; both T-Net obligations satisfied \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Each B$i$ is verified at \texttt{evals/run\_evals.py}; the
+machine output is committed to \texttt{evals/results.json}.
+
+\end{document}

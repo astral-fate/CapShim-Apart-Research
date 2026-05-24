@@ -1,0 +1,45 @@
+# Example CapShim policy.
+#
+# Use case: a coding agent that needs to read user source files and post
+# to a small set of trusted CI/issue-tracking endpoints, but must never
+# exfiltrate secrets or write secrets to user-readable paths.
+
+sensitive_paths:
+  - "**/.ssh/*"
+  - "**/.aws/credentials"
+  - "**/.env"
+  - "/etc/shadow"
+  - "**/id_rsa*"
+  - "**/secrets/**"
+
+sensitive_env:
+  - "AWS_*"
+  - "*TOKEN*"
+  - "*SECRET*"
+  - "*PASSWORD*"
+  - "*API_KEY*"
+  - "OPENAI_API_KEY"
+  - "ANTHROPIC_API_KEY"
+
+trusted_hosts:
+  - "internal.company.local"
+  - "audit-sink.company.local"
+
+allowed_egress:
+  - "api.github.com"
+  - "internal.company.local"
+  - "audit-sink.company.local"
+  - "weather.example.com"
+  - "public-mirror.example.com"
+
+declassifications:
+  # Allow the audit sink to receive Secret-tagged data (because that's
+  # its job), but only if the data did not come from .ssh.
+  - from: SECRET
+    to: PUBLIC
+    by: net_http_post
+    when: "net.http(audit-sink.company.local)"
+
+tool_labels:
+  # Per-tool label overrides go here if the upstream schema is wrong or
+  # missing. Empty by default.

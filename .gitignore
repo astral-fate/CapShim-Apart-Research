@@ -1,0 +1,69 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# --- Caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+*.pem
+*.key
+*.p12
+
+# --- LaTeX build artefacts ---
+paper/main.aux
+paper/main.bbl
+paper/main.blg
+paper/main.log
+paper/main.out
+paper/main.toc
+paper/main.fdb_latexmk
+paper/main.fls
+paper/main.synctex.gz
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+
+# --- Local agent / plugin state (never commit) ---
+.omc/
+.claude/
+.cursor/
+.continue/
+.aider*
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# --- Notebook checkpoints ---
+.ipynb_checkpoints/
+
+# Note: evals/results.json IS tracked (eval evidence for reproducibility).
